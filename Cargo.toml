@@ -11,6 +11,10 @@ path = "src/server.rs"
 name = "runtome"
 path = "src/client.rs"
 
+[[bin]]
+name = "test"
+path = "src/test.rs"
+
 [dependencies]
 actix = "0.10"
 actix-codec = "0.3"
@@ -19,10 +23,21 @@ actix-web-actors = "3"
 actix-files = "0.3"
 awc = "2"
 p12 = "0.6.0"
-env_logger = "0.8"
 futures = "0.3.1"
-futures-channel = "0.3.21"
 bytes = "0.5.3"
-lru = "0.7.2"
-ringbuf = "0.2.6"
+env_logger = "0.8"
+lapin = "2.0.1"
+futures-lite = "1.12.0"
+tracing = "0.1.30"
+async-global-executor = "2.0.2"
+deadpool-lapin = { version = "0.9.1", features = ["rt_async-std_1"] }
 uuid = { version = "0.8", features = ["serde", "v4"] }
+serde_json = "1.0"
+serde = {version = "1.0", features = ["derive"]}
+clap = { version = "3.1.2", features = ["derive"] }
+# encryption
+x25519-dalek = "1"
+rand_core = { version = "0.5", default-features = false }
+rand = "0.8.5"
+aes-gcm = "0.9.4"
+base64 = "0.13.0"
