@@ -1,20 +1,26 @@
+extern crate qstring;
+
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::str::from_utf8;
 use std::time::{Duration, Instant};
-use serde::{Deserialize, Serialize};
+
 use actix::prelude::*;
 use actix_files as fs;
-use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{App, Error, HttpMessage, HttpRequest, HttpResponse, HttpServer, middleware, web};
 use actix_web::http::StatusCode;
 use actix_web_actors::ws;
 use awc::ws::Message::Text;
-use futures_lite::stream::StreamExt;
-use futures_lite::FutureExt;
 use deadpool_lapin::{Config, Pool, Runtime};
 use deadpool_lapin::lapin::{BasicProperties, Channel, Consumer};
 use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions, QueueDeleteOptions};
 use deadpool_lapin::lapin::types::FieldTable;
+use futures_lite::FutureExt;
+use futures_lite::stream::StreamExt;
 use lapin::{Connection, ConnectionProperties};
+use lapin::types::ShortString;
+use qstring::QString;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::common::{RequestData, ResponseData, SecureEnvelop};
 use crate::encryption::MessageEncryptor;
@@ -71,15 +77,18 @@ async fn ws_index(pool: web::Data<Pool>,
 async fn handle_hook(pool: web::Data<Pool>,
                      message_encryptor: web::Data<MessageEncryptor>,
                      request: HttpRequest,
-                     paths: web::Path<(String)>,
+                     paths: web::Path<(String, String)>,
                      body: web::Bytes) -> Result<HttpResponse, Error> {
-    let client_id = paths.0;
+    let (client_id, tail_path) = paths.into_inner();
+    println!("Remaining path: {}", tail_path);
+    println!("Query: {}", request.query_string());
     let connection = pool.get().await.unwrap();
     let channel = connection.create_channel().await.unwrap();
     let queue_req_name = format!("{}_req", client_id);
     let queue_res_name = format!("{}_res", client_id);
 
-    let url = request.uri().to_string();
+    let query_pairs = QString::from(request.query_string()).into_pairs();
+
     let method = request.method().to_string();
     // Remove `Connection` as per
     // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Connection#Directives
@@ -87,9 +96,19 @@ async fn handle_hook(pool: web::Data<Pool>,
     for (header_name, header_value) in request.headers().iter().filter(|(h, _)| *h != "connection") {
         headers.insert(header_name.as_str().to_string(), header_value.to_str().unwrap().to_string());
     }
+    let content_type = request.content_type().to_string();
     let body = Some(String::from_utf8(body.to_vec()).unwrap());
+    let request_id = Uuid::new_v4().to_string();
     println!("Body: {:?}", body);
-    let request_data = RequestData { url, method, headers, body };
+    let request_data = RequestData {
+        request_id: request_id.clone(),
+        path: tail_path,
+        query_pairs,
+        method,
+        headers,
+        content_type,
+        body
+    };
     let serialized_request_data = serde_json::to_vec(&request_data)?;
 
     let confirm = channel
@@ -110,33 +129,44 @@ async fn handle_hook(pool: web::Data<Pool>,
             BasicConsumeOptions::default(),
             FieldTable::default(),
         ).await.unwrap();
-    match consumer.next().await {
-        Some(result) => {
-            // TODO: handle exception delete the message
-            let (_, delivery) = result.unwrap();
-            let secure_response_envelop_json = from_utf8(&delivery.data).unwrap();
-            println!("Secure Response Envelop JSON: {}", secure_response_envelop_json);
-            let secure_response_envelop: SecureEnvelop = serde_json::from_str(secure_response_envelop_json).unwrap();
-            println!("Secure Response Envelop: {:?}", secure_response_envelop);
-            let client_public_key = secure_response_envelop.encoded_public_key;
-            println!("Client Public Key: {:?}", client_public_key);
-            println!("Server Public Key: {:?}", message_encryptor.encoded_public_key());
-            let nonce = secure_response_envelop.nonce;
-            println!("Nonce: {:?}", nonce);
-            let encrypted_payload = secure_response_envelop.encrypted_payload;
-            println!("Encrypted Payload: {:?}", encrypted_payload);
 
-            let response_data_json = message_encryptor.decrypt_from_text(
-                &client_public_key, &nonce, &encrypted_payload);
-            let response_data: ResponseData = serde_json::from_str(&response_data_json).unwrap();
-
-            delivery.ack(BasicAckOptions::default()).await.expect("ack");
-            match response_data.body {
-                Some(body) => Ok(client_resp.body(body)),
-                None => Ok(client_resp.finish())
+    let delivery_data = loop {
+        match consumer.next().await {
+            Some(result) => {
+                let (_, delivery) = result.unwrap();
+                let message_id = &delivery.properties.message_id().clone().unwrap().to_string();
+                if message_id == &request_id {
+                    delivery.ack(BasicAckOptions::default()).await.expect("ack");
+                    break delivery.data
+                }
             }
+            _ => {}
         }
-        _ =>  Ok(client_resp.body("error"))
+    };
+    let secure_response_envelop_json = from_utf8(&delivery_data).unwrap();
+    println!("Secure Response Envelop JSON: {}", secure_response_envelop_json);
+    let secure_response_envelop: SecureEnvelop = serde_json::from_str(secure_response_envelop_json).unwrap();
+    println!("Secure Response Envelop: {:?}", secure_response_envelop);
+    let client_public_key = secure_response_envelop.encoded_public_key;
+    println!("Client Public Key: {:?}", client_public_key);
+    println!("Server Public Key: {:?}", message_encryptor.encoded_public_key());
+    let nonce = secure_response_envelop.nonce;
+    println!("Nonce: {:?}", nonce);
+    let encrypted_payload = secure_response_envelop.encrypted_payload;
+    println!("Encrypted Payload: {:?}", encrypted_payload);
+
+    let response_data_json = message_encryptor.decrypt_from_text(
+        &client_public_key, &nonce, &encrypted_payload);
+    let response_data: ResponseData = serde_json::from_str(&response_data_json).unwrap();
+    client_resp.status(StatusCode::from_u16(response_data.status).unwrap());
+    client_resp.content_type(response_data.content_type);
+    for (key, value) in response_data.headers {
+        client_resp.set_header(key, value);
+    }
+
+    match response_data.body {
+        Some(body) => Ok(client_resp.body(body)),
+        None => Ok(client_resp.finish())
     }
 
 }
@@ -199,7 +229,6 @@ impl Actor for MyWebSocket {
                 let encrypted_payload = message_encryptor.encrypt_as_text(&client_public_key, &nonce, request_data);
                 let server_public_key = message_encryptor.encoded_public_key();
                 let secure_envelop = SecureEnvelop {
-                    data_id:  Uuid::new_v4().to_string(),
                     encoded_public_key: server_public_key,
                     nonce,
                     encrypted_payload,
@@ -250,17 +279,18 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
                 self.hb = Instant::now();
             }
             Ok(ws::Message::Text(text)) => {
-
-                // let response_data: ResponseData = serde_json::from_str(&text).unwrap();
+                // substring for the UUID?
+                let message_id = &text[0..36];
+                let encrypted_response = text[36..].to_string().as_bytes().to_vec();
+                let properties = BasicProperties::default().with_message_id(message_id.into());
 
                 channel.basic_publish(
                         "",
                         &queue_res,
                         BasicPublishOptions::default(),
-                        text.as_bytes().to_vec(),
-                        BasicProperties::default(),
+                        encrypted_response,
+                        properties,
                 );
-
                 println!("Response data: {}", text);
             },
             Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
@@ -327,7 +357,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(message_encryptor.clone()))
             // websocket route
             .service(web::resource("/subscribe/{client_id}").route(web::get().to(ws_index)))
-            .service(web::resource("/hook/{client_id}").route(web::to(handle_hook)))
+            .service(web::resource("/hook/{client_id}/{paths:.*}").route(web::to(handle_hook)))
             // static files
             .service(fs::Files::new("/", "static/").index_file("index.html"))
     })
