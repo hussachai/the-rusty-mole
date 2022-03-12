@@ -1,7 +1,9 @@
 extern crate qstring;
+#[macro_use]
+extern crate log;
 
-use std::borrow::Borrow;
 use std::collections::HashMap;
+
 use std::str::from_utf8;
 use std::time::{Duration, Instant};
 
@@ -10,22 +12,18 @@ use actix_files as fs;
 use actix_web::{App, Error, HttpMessage, HttpRequest, HttpResponse, HttpServer, middleware, web};
 use actix_web::http::StatusCode;
 use actix_web_actors::ws;
-use awc::ws::Message::Text;
+use clap::Parser;
 use deadpool_lapin::{Config, Pool, Runtime};
-use deadpool_lapin::lapin::{BasicProperties, Channel, Consumer};
+use deadpool_lapin::lapin::{BasicProperties, Channel};
 use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions, QueueDeleteOptions};
 use deadpool_lapin::lapin::types::FieldTable;
-use futures_lite::FutureExt;
 use futures_lite::stream::StreamExt;
-use lapin::{Connection, ConnectionProperties};
-use lapin::types::ShortString;
 use qstring::QString;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::common::{RequestData, ResponseData, SecureEnvelop};
+use crate::models::{RequestData, ResponseData, SecureEnvelop};
 use crate::encryption::MessageEncryptor;
 
-mod common;
+mod models;
 mod encryption;
 
 /// How often heartbeat pings are sent
@@ -37,26 +35,25 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 async fn ws_index(pool: web::Data<Pool>,
                   message_encryptor: web::Data<MessageEncryptor>,
                   request: HttpRequest,
-                  paths: web::Path<(String)>,
+                  paths: web::Path<String>,
                   stream: web::Payload) -> Result<HttpResponse, Error> {
-    println!("{:?}", request);
+    debug!("{:?}", request);
     let client_public_key = request.headers().get("X-Public-Key").unwrap().to_str().unwrap();
-    let client_id = paths.0; // Uuid::new_v4().to_string()?;
+    let client_id = paths.0;
     let connection = pool.get().await.unwrap();
     let channel = connection.create_channel().await.unwrap();
     let queue_req_name = format!("{}_req", client_id);
     let queue_res_name = format!("{}_res", client_id);
 
-    println!("Client Public Key: {:?}", client_public_key);
+    info!("Received connection request from client ID: {}", client_id);
+    debug!("Client Public Key: {:?}", client_public_key);
 
-    // TODO: obtain public key from the request
-    // TODO: WS should send out the server public key out immediately
-    channel.queue_declare(
+    let _ = channel.queue_declare(
             &queue_req_name,
             QueueDeclareOptions::default(),
             FieldTable::default(),
     ).await;
-    channel.queue_declare(
+    let _ = channel.queue_declare(
             &queue_res_name,
             QueueDeclareOptions::default(),
             FieldTable::default(),
@@ -70,7 +67,7 @@ async fn ws_index(pool: web::Data<Pool>,
         queue_res_name
     );
     let response = ws::start(actor, &request, stream);
-    println!("{:?}", response);
+    debug!("{:?}", response);
     response
 }
 
@@ -80,8 +77,8 @@ async fn handle_hook(pool: web::Data<Pool>,
                      paths: web::Path<(String, String)>,
                      body: web::Bytes) -> Result<HttpResponse, Error> {
     let (client_id, tail_path) = paths.into_inner();
-    println!("Remaining path: {}", tail_path);
-    println!("Query: {}", request.query_string());
+    debug!("Tail path: {}", tail_path);
+    debug!("Query: {}", request.query_string());
     let connection = pool.get().await.unwrap();
     let channel = connection.create_channel().await.unwrap();
     let queue_req_name = format!("{}_req", client_id);
@@ -99,7 +96,7 @@ async fn handle_hook(pool: web::Data<Pool>,
     let content_type = request.content_type().to_string();
     let body = Some(String::from_utf8(body.to_vec()).unwrap());
     let request_id = Uuid::new_v4().to_string();
-    println!("Body: {:?}", body);
+    debug!("Body: {:?}", body);
     let request_data = RequestData {
         request_id: request_id.clone(),
         path: tail_path,
@@ -111,7 +108,7 @@ async fn handle_hook(pool: web::Data<Pool>,
     };
     let serialized_request_data = serde_json::to_vec(&request_data)?;
 
-    let confirm = channel
+    let _ = channel
         .basic_publish(
             "",
             &queue_req_name,
@@ -144,16 +141,16 @@ async fn handle_hook(pool: web::Data<Pool>,
         }
     };
     let secure_response_envelop_json = from_utf8(&delivery_data).unwrap();
-    println!("Secure Response Envelop JSON: {}", secure_response_envelop_json);
+    debug!("Secure Response Envelop JSON: {}", secure_response_envelop_json);
     let secure_response_envelop: SecureEnvelop = serde_json::from_str(secure_response_envelop_json).unwrap();
-    println!("Secure Response Envelop: {:?}", secure_response_envelop);
+    debug!("Secure Response Envelop: {:?}", secure_response_envelop);
     let client_public_key = secure_response_envelop.encoded_public_key;
-    println!("Client Public Key: {:?}", client_public_key);
-    println!("Server Public Key: {:?}", message_encryptor.encoded_public_key());
+    debug!("Client Public Key: {:?}", client_public_key);
+    debug!("Server Public Key: {:?}", message_encryptor.encoded_public_key());
     let nonce = secure_response_envelop.nonce;
-    println!("Nonce: {:?}", nonce);
+    debug!("Nonce: {:?}", nonce);
     let encrypted_payload = secure_response_envelop.encrypted_payload;
-    println!("Encrypted Payload: {:?}", encrypted_payload);
+    debug!("Encrypted Payload: {:?}", encrypted_payload);
 
     let response_data_json = message_encryptor.decrypt_from_text(
         &client_public_key, &nonce, &encrypted_payload);
@@ -222,25 +219,33 @@ impl Actor for MyWebSocket {
                     BasicConsumeOptions::default(),
                     FieldTable::default(),
                 ).await.unwrap();
-            while let Some(delivery) = consumer.next().await {
-                let (_, delivery) = delivery.expect("error in consumer");
-                let request_data = from_utf8(&delivery.data).unwrap();
-                let nonce = message_encryptor.generate_nonce();
-                let encrypted_payload = message_encryptor.encrypt_as_text(&client_public_key, &nonce, request_data);
-                let server_public_key = message_encryptor.encoded_public_key();
-                let secure_envelop = SecureEnvelop {
-                    encoded_public_key: server_public_key,
-                    nonce,
-                    encrypted_payload,
-                };
+            while let Some(next_result) = consumer.next().await {
+                match next_result {
+                    Ok((_, delivery)) => {
+                        let request_data = from_utf8(&delivery.data).unwrap();
+                        let nonce = message_encryptor.generate_nonce();
+                        let encrypted_payload = message_encryptor.encrypt_as_text(&client_public_key, &nonce, request_data);
+                        let server_public_key = message_encryptor.encoded_public_key();
+                        let secure_envelop = SecureEnvelop {
+                            encoded_public_key: server_public_key,
+                            nonce,
+                            encrypted_payload,
+                        };
 
-                let serialized_secure_envelop = serde_json::to_string(&secure_envelop).unwrap();
+                        let serialized_secure_envelop = serde_json::to_string(&secure_envelop).unwrap();
 
-                self_addr.do_send(TextMessage {text: serialized_secure_envelop });
+                        self_addr.do_send(TextMessage {text: serialized_secure_envelop });
 
-                println!("Consumed: {:?}", request_data);
+                        debug!("Consumed: {:?}", request_data);
 
-                delivery.ack(BasicAckOptions::default()).await.expect("ack");
+                        let ack_result = delivery.ack(BasicAckOptions::default()).await;
+                        if ack_result.is_err() {
+                            error!("Ack failed. The message will be retried again!");
+                        }
+                    }
+                    Err(e) =>
+                        error!("Could not consume the message due to {:?}", e)
+                }
             }
         }).detach();
 
@@ -249,11 +254,11 @@ impl Actor for MyWebSocket {
 
     // I think it might be ok to do a clean up here even we have a cluster of this,
     // the WS connection between LB and the client should be sticky.
-    fn stopped(&mut self, ctx: &mut Self::Context) {
+    fn stopped(&mut self, _: &mut Self::Context) {
         let queue_req = format!("{}_req", self.client_id);
         let queue_res = format!("{}_res", self.client_id);
-        self.channel.queue_delete(&queue_req, QueueDeleteOptions::default());
-        self.channel.queue_delete(&queue_res, QueueDeleteOptions::default());
+        let _ = self.channel.queue_delete(&queue_req, QueueDeleteOptions::default());
+        let _ = self.channel.queue_delete(&queue_res, QueueDeleteOptions::default());
     }
 }
 
@@ -284,14 +289,14 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
                 let encrypted_response = text[36..].to_string().as_bytes().to_vec();
                 let properties = BasicProperties::default().with_message_id(message_id.into());
 
-                channel.basic_publish(
+                let _ = channel.basic_publish(
                         "",
                         &queue_res,
                         BasicPublishOptions::default(),
                         encrypted_response,
                         properties,
                 );
-                println!("Response data: {}", text);
+                debug!("Response data: {}", text);
             },
             Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
             Ok(ws::Message::Close(reason)) => {
@@ -310,7 +315,6 @@ impl MyWebSocket {
            channel: Channel,
            queue_req_name: String,
            queue_res_name: String) -> Self {
-        println!("Hello NEW");
 
         Self { hb: Instant::now(), client_id, message_encryptor, client_public_key, channel, queue_req_name, queue_res_name }
     }
@@ -338,18 +342,36 @@ impl MyWebSocket {
     }
 }
 
+/// The open source secure introspectable tunnels to localhost.
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct ServerOptions {
+    /// A bind address. The default value is 0.0.0.0
+    #[clap(short, long, default_value = "0.0.0.0")]
+    bind_addr: String,
+    /// A Rabbit MQ URI. The default value amqp://127.0.0.1:5672/%2f
+    #[clap(short, long, default_value = "amqp://127.0.0.1:5672/%2f")]
+    amqp_uri: String,
+    /// The port number that the server will listen to the client. The default value is 8080
+    #[clap(short, long, default_value = "8080")]
+    port: u16
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info");
+    std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info,runtome=info");
     env_logger::init();
 
+    let options: ServerOptions = Parser::parse();
+
+    models::print_banner("Server");
+
     let mut cfg = Config::default();
-    cfg.url = Some("amqp://127.0.0.1:5672/%2f".into());
+    cfg.url = Some(options.amqp_uri.into());
     let pool = cfg.create_pool(Some(Runtime::AsyncStd1)).unwrap();
     let message_encryptor = MessageEncryptor::default();
 
     HttpServer::new(move || {
-        println!("New Message Encryptor!!");
         App::new()
             // enable logger
             .wrap(middleware::Logger::default())
@@ -362,7 +384,7 @@ async fn main() -> std::io::Result<()> {
             .service(fs::Files::new("/", "static/").index_file("index.html"))
     })
         // start http server on 127.0.0.1:8080
-        .bind("127.0.0.1:8080")?
+        .bind(format!("{}:{}", options.bind_addr, options.port))?
         .run()
         .await
 }

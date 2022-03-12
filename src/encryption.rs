@@ -1,10 +1,8 @@
 use std::str::from_utf8;
-use rand_core::{OsRng, RngCore};
+use rand_core::OsRng;
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
-use aes_gcm::{Aes256Gcm, AesGcm, Key, Nonce}; // Or `Aes128Gcm`
+use aes_gcm::{Aes256Gcm, Key, Nonce}; // Or `Aes128Gcm`
 use aes_gcm::aead::{Aead, NewAead};
-use aes_gcm::aes::Aes256;
-use rand::{Rng, thread_rng};
 use rand::distributions::{Alphanumeric, DistString};
 extern crate base64;
 use base64::{encode, decode};

@@ -1,95 +1,189 @@
+#[macro_use]
+extern crate log;
+
 use std::time::Duration;
-use std::{io, thread};
 use std::collections::HashMap;
-use std::env::Args;
 use std::io::Read;
-use std::str::{from_utf8, FromStr};
+use std::str::from_utf8;
+use std::thread;
 
 use actix::io::SinkWrite;
 use actix::*;
 use actix_codec::Framed;
-use actix_web::{HttpMessage, HttpResponse};
-use awc::{error::WsProtocolError, ws::{Codec, Frame, Message}, BoxedSocket, Client, http};
+use awc::{error::WsProtocolError, ws::{Codec, Frame, Message}, BoxedSocket, Client};
 use bytes::Bytes;
 use futures::stream::{SplitSink, StreamExt};
 use uuid::Uuid;
-use crate::common::{RequestData, ResponseData, SecureEnvelop};
+use crate::models::{RequestData, ResponseData, SecureEnvelop};
 use crate::encryption::MessageEncryptor;
 use clap::Parser;
-use futures::{TryFutureExt, TryStreamExt};
-use tracing::log;
 use ureq::{Agent, Error};
 
-mod common;
+mod models;
 mod encryption;
 
+const MIN_RETRY_WAIT_TIME: u64 = 1;
+
+const MAX_RETRY_WAIT_TIME: u64 = 60;
+
 fn main() {
-    ::std::env::set_var("RUST_LOG", "actix_web=info");
+    ::std::env::set_var("RUST_LOG", "actix_web=info, runtome=info");
     env_logger::init();
 
-    let sys = System::new("websocket-client");
 
-    Arbiter::spawn(async {
-        let options: RunToMeOptions = Parser::parse();
-        println!("ClientID: {}, Port: {}", options.client_id, options.port);
-        let message_encryptor = MessageEncryptor::default();
-        let client_id = Uuid::new_v4().to_string();
-        let (response, framed) = Client::new()
-            .ws(format!("http://127.0.0.1:8080/subscribe/{}", client_id))
-            .header("X-Public-Key", message_encryptor.encoded_public_key())
-            .connect()
-            .await
-            .map_err(|e| {
-                println!("Error: {:?}", e);
-            })
-            .unwrap();
+    let mut sys = System::new("websocket-client");
+    let options: ClientOptions = Parser::parse();
 
-        println!("{:?}", response);
-        println!("Client Public Key: {:?}", message_encryptor.encoded_public_key());
+    let client_id = if &options.client_id == "" {
+        Uuid::new_v4().to_string().replace("-", "")
+    } else {
+        options.client_id.clone()
+    };
 
-        let (sink, stream) = framed.split();
-        let addr = ChatClient::create(|ctx| {
-            ChatClient::add_stream(stream, ctx);
-            let http_agent: Agent = ureq::AgentBuilder::new()
-                .timeout_read(Duration::from_secs(30))
-                .timeout_write(Duration::from_secs(30))
-                .build();
-            ChatClient {
-                options,
-                http_agent,
-                message_encryptor,
-                writer: SinkWrite::new(sink, ctx),
-            }
-        });
+    models::print_banner("Client");
+    println!("The following proxy URL is ready to serve:\n{}/hook/{}\n\n", options.server_host, client_id);
 
-        // start console loop
-        thread::spawn(move || loop {
-            let mut cmd = String::new();
-            if io::stdin().read_line(&mut cmd).is_err() {
-                println!("error");
-                return;
-            }
-            addr.do_send(ClientCommand(cmd));
-        });
+    let retry_wait_time = MIN_RETRY_WAIT_TIME;
+    let addr = sys.block_on(async move {
+        actix::Supervisor::start(move |_| WebSocketClientInitializer{options, client_id, retry_wait_time})
     });
+    addr.do_send(Connect);
+
     sys.run().unwrap();
+
 }
 
+// TODO: support subdomain
 /// The open source secure introspectable tunnels to localhost.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(author, version, about, long_about = None)]
-struct RunToMeOptions {
+struct ClientOptions {
     /// A custom client_id. If omitted, UUID v4 will be used.
-    #[clap(short, long)]
+    #[clap(short, long, default_value = "")]
     client_id: String,
 
     /// The port number that the traffic will be routed to.
+    #[clap(short = 'p', long)]
+    target_port: u16,
+
+    /// The server host
+    #[clap(short, long, default_value = "http://localhost:8080")]
+    server_host: String,
+
+    /// Timeout for the individual reads of the socket in seconds
+    #[clap(long, default_value = "30")]
+    timeout_read: u64,
+
+    /// Timeout for the individual writes of the socket in seconds
+    #[clap(long, default_value = "30")]
+    timeout_write: u64,
+
+    /// Show the request/response in the console
     #[clap(short, long)]
-    port: u16
+    debug: bool
+
 }
 
-struct ChatClient {
-    options: RunToMeOptions,
+struct WebSocketClientInitializer {
+    options: ClientOptions,
+    client_id: String,
+    retry_wait_time: u64 // when connection fails, we do retry after x seconds
+}
+
+impl WebSocketClientInitializer {
+
+    fn retry_wait_time(&mut self, secs: u64) {
+        self.retry_wait_time = secs;
+    }
+}
+
+impl Actor for WebSocketClientInitializer {
+    type Context = Context<Self>;
+}
+
+// To use actor with supervisor actor has to implement `Supervised` trait
+impl actix::Supervised for WebSocketClientInitializer {
+
+    fn restarting(&mut self, ctx: &mut Context<Self>) {
+        info!("Waiting for {} seconds before attempting to reconnecting...", self.retry_wait_time);
+        thread::sleep(Duration::from_secs(self.retry_wait_time));
+        info!("Reconnecting...");
+        ctx.address().do_send(Connect);
+    }
+}
+
+impl Handler<PoisonPill> for WebSocketClientInitializer {
+    type Result = ();
+
+    fn handle(&mut self, _: PoisonPill, ctx: &mut Context<Self>) {
+        let retry_wait_time = self.retry_wait_time + 1;
+        if retry_wait_time <= MAX_RETRY_WAIT_TIME {
+            self.retry_wait_time(retry_wait_time);
+        }
+        ctx.stop();
+    }
+}
+
+impl Handler<ResetRetryWaitTime> for WebSocketClientInitializer {
+    type Result = ();
+
+    fn handle(&mut self, _: ResetRetryWaitTime, _: &mut Context<Self>) {
+        self.retry_wait_time(MIN_RETRY_WAIT_TIME);
+    }
+}
+
+impl Handler<Connect> for WebSocketClientInitializer {
+    type Result = ResponseFuture<()>;
+    fn handle(&mut self, _: Connect, ctx: &mut Context<Self>) -> Self::Result {
+        let init_actor = ctx.address().clone();
+        let options = self.options.clone();
+        let client_id = self.client_id.clone();
+
+        Box::pin(async move {
+
+            let message_encryptor = MessageEncryptor::default();
+
+           let ws_connect = Client::new()
+                .ws(format!("{}/subscribe/{}", options.server_host, client_id))
+                .header("X-Public-Key", message_encryptor.encoded_public_key())
+                .connect()
+                .await;
+
+            match ws_connect {
+                Ok((response, framed)) => {
+                    debug!("{:?}", response);
+                    debug!("Client Public Key: {:?}", message_encryptor.encoded_public_key());
+
+                    init_actor.do_send(ResetRetryWaitTime);
+
+                    let (sink, stream) = framed.split();
+                    WebSocketClient::create(|ctx| {
+                        WebSocketClient::add_stream(stream, ctx);
+                        let http_agent: Agent = ureq::AgentBuilder::new()
+                            .timeout_read(Duration::from_secs(options.timeout_read))
+                            .timeout_write(Duration::from_secs(options.timeout_write))
+                            .build();
+                        WebSocketClient {
+                            init_actor,
+                            options,
+                            http_agent,
+                            message_encryptor,
+                            writer: SinkWrite::new(sink, ctx),
+                        }
+                    });
+                }
+                Err(e) => {
+                    warn!("Error occurred: {}", e);
+                    init_actor.do_send(PoisonPill);
+                }
+            }
+        })
+    }
+}
+
+struct WebSocketClient {
+    init_actor: Addr<WebSocketClientInitializer>,
+    options: ClientOptions,
     http_agent: Agent,
     message_encryptor: MessageEncryptor,
     writer: SinkWrite<Message, SplitSink<Framed<BoxedSocket, Codec>, Message>>,
@@ -97,7 +191,15 @@ struct ChatClient {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-struct ClientCommand(String);
+struct PoisonPill;
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct ResetRetryWaitTime;
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct Connect;
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -125,7 +227,7 @@ struct SendResponse {
     response_data: ResponseData
 }
 
-impl Actor for ChatClient {
+impl Actor for WebSocketClient {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Context<Self>) {
@@ -133,15 +235,16 @@ impl Actor for ChatClient {
         self.hb(ctx)
     }
 
-    fn stopped(&mut self, _: &mut Context<Self>) {
-        println!("Disconnected");
-
+    fn stopped(&mut self, ctx: &mut Context<Self>) {
+        info!("Disconnected");
         // Stop application on disconnect
-        System::current().stop();
+        ctx.stop();
+        self.init_actor.do_send(Connect)
+        // System::current().stop();
     }
 }
 
-impl ChatClient {
+impl WebSocketClient {
     fn hb(&self, ctx: &mut Context<Self>) {
         ctx.run_later(Duration::new(5, 0), |act, ctx| {
             act.writer.write(Message::Ping(Bytes::from_static(b"")));
@@ -153,21 +256,12 @@ impl ChatClient {
 
 }
 
-/// Handle stdin commands
-impl Handler<ClientCommand> for ChatClient {
-    type Result = ();
-
-    fn handle(&mut self, msg: ClientCommand, _ctx: &mut Context<Self>) {
-        self.writer.write(Message::Text(msg.0));
-    }
-}
-
-impl Handler<BuildRequest> for ChatClient {
+impl Handler<BuildRequest> for WebSocketClient {
     type Result = ();
 
     fn handle(&mut self, msg: BuildRequest, ctx: &mut Context<Self>) {
         let secure_incoming_envelop_json = from_utf8(&msg.data).unwrap();
-        println!("Secure Incoming Envelop: {:?}", secure_incoming_envelop_json);
+        debug!("Secure Incoming Envelop: {:?}", secure_incoming_envelop_json);
 
         let secure_incoming_envelop: SecureEnvelop = serde_json::from_str(secure_incoming_envelop_json).unwrap();
         let server_public_key =  secure_incoming_envelop.encoded_public_key;
@@ -177,10 +271,12 @@ impl Handler<BuildRequest> for ChatClient {
             &nonce,
             &secure_incoming_envelop.encrypted_payload
         );
-        println!("Request data JSON: {:?}", request_data_json);
+        debug!("Request data JSON: {:?}", request_data_json);
 
         let request_data: RequestData = serde_json::from_str(&request_data_json).unwrap();
-        println!("Yes : {:?}", request_data);
+        if self.options.debug {
+            info!("{}", request_data);
+        }
         let server_key = ServerKey {
             server_public_key,
             nonce
@@ -189,19 +285,20 @@ impl Handler<BuildRequest> for ChatClient {
     }
 }
 
-impl Handler<ExecuteRequest> for ChatClient {
+impl Handler<ExecuteRequest> for WebSocketClient {
 
     type Result = ResponseFuture<()>;
 
     fn handle(&mut self, msg: ExecuteRequest, ctx: &mut Context<Self>) -> Self::Result {
-        let target_port = self.options.port;
+        let target_port = self.options.target_port;
+        let is_debuggable = self.options.debug;
         let http_agent = self.http_agent.clone();
         let self_addr = ctx.address().clone();
         Box::pin(async move {
             let server_key = msg.server_key;
             let request_data = msg.request_data;
             let request_id = request_data.request_id;
-            println!("Path: {}", request_data.path);
+            debug!("Path: {}", request_data.path);
             let target_uri = format!("http://localhost:{}/{}", target_port, request_data.path);
             let mut http_request = http_agent.request(&request_data.method, &target_uri);
             for (key, value) in &request_data.headers {
@@ -213,17 +310,15 @@ impl Handler<ExecuteRequest> for ChatClient {
             };
             let http_response = match http_response_result {
                 Ok(response) => {
-                    // TODO: log successful
                     response
                 },
-                Err(Error::Status(code, response)) => {
+                Err(Error::Status(_, response)) => {
                     /* the server returned an unexpected status
                     code (such as 400, 500 etc) */
                     response
                 }
                 Err(_) => {
-                    // TODO: handle it gracefully
-                    panic!("Transport error")
+                    ureq::Response::new(503, "Service Unavailable", "").unwrap()
                 }
             };
             let res_status = http_response.status();
@@ -234,13 +329,12 @@ impl Handler<ExecuteRequest> for ChatClient {
             }
 
             let mut res_body_buf: Vec<u8> = vec![];
-            http_response.into_reader().read_to_end(&mut res_body_buf);
+            let _ = http_response.into_reader().read_to_end(&mut res_body_buf);
             let res_body = if res_body_buf.is_empty() {
                 None
             } else {
                 Some(String::from_utf8_lossy(&res_body_buf).to_string())
             };
-            // let res_body = Some(http_response.into_string().unwrap());
             // TODO: support octet stream
             let response_data = ResponseData {
                 status: res_status,
@@ -248,25 +342,29 @@ impl Handler<ExecuteRequest> for ChatClient {
                 content_type: res_content_type,
                 body: res_body
             };
-            // ctx.address().do_send(SendResponse { server_key, request_id, response_data });
+
+            if is_debuggable {
+                info!("{}", response_data);
+            }
+
             self_addr.do_send(SendResponse { server_key, request_id, response_data })
         })
     }
 }
 
-impl Handler<SendResponse> for ChatClient {
+impl Handler<SendResponse> for WebSocketClient {
     type Result = ();
 
-    fn handle(&mut self, msg: SendResponse, ctx: &mut Context<Self>) {
+    fn handle(&mut self, msg: SendResponse, _: &mut Context<Self>) {
         let server_public_key = msg.server_key.server_public_key;
         let nonce = msg.server_key.nonce;
         let request_id = msg.request_id;
         let response_data = msg.response_data;
-        println!("Response Data: {:?}", response_data);
+        debug!("Response Data: {:?}", response_data);
         let response_data_json = serde_json::to_string(&response_data).unwrap();
-        println!("Response Data JSON: {:?}", response_data_json);
+        debug!("Response Data JSON: {:?}", response_data_json);
         let client_public_key = self.message_encryptor.encoded_public_key();
-        println!("Server Public Key: {:?}", server_public_key);
+        debug!("Server Public Key: {:?}", server_public_key);
         let encrypted_payload = self.message_encryptor.encrypt_as_text(
             &server_public_key, &nonce, &response_data_json);
 
@@ -283,24 +381,23 @@ impl Handler<SendResponse> for ChatClient {
     }
 }
 /// Handle server websocket messages
-impl StreamHandler<Result<Frame, WsProtocolError>> for ChatClient {
+impl StreamHandler<Result<Frame, WsProtocolError>> for WebSocketClient {
 
     fn handle(&mut self, msg: Result<Frame, WsProtocolError>, ctx: &mut Context<Self>) {
-        let self_addr = ctx.address().clone();
         if let Ok(Frame::Text(data)) = msg {
-            println!("Server: {:?}", data);
+            debug!("Server: {:?}", data);
             ctx.address().do_send(BuildRequest { data });
         }
     }
 
     fn started(&mut self, _ctx: &mut Context<Self>) {
-        println!("Connected");
+        info!("Connected");
     }
 
     fn finished(&mut self, ctx: &mut Context<Self>) {
-        println!("Server disconnected");
+        info!("Server disconnected");
         ctx.stop()
     }
 }
 
-impl actix::io::WriteHandler<WsProtocolError> for ChatClient {}
+impl actix::io::WriteHandler<WsProtocolError> for WebSocketClient {}
