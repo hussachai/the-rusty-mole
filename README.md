@@ -2,7 +2,7 @@
 Run to Me
 ===========
 
-Run to Me is a simple local tunneling application written in Rust.
+Run to Me is a dead simple local tunneling application written in Rust.
 
 Server
 ===========
@@ -41,6 +41,13 @@ to a new server automatically if the old one is down.
 ./runtome --target-port 8888 --server-host https://tailrec.io --debug
 ```
 
+Because `--server-host` parameter is something you don't change once the server is set up, this parameter can be provided/override 
+through the environment variable named `RUNTOME_SERVER_HOST`. 
+For Mac user, you can modify `~/.zprofile` and add the following line to that file.  
+```text
+export RUNTOME_SERVER_HOST=https://myownserver.xyz
+```
+
 **Available Options**
 - `--target-port {integer}`* The HTTP port that the client will forward the request to.
 - `--server-host {string}` The default value is `http://localhost:8080`.  
@@ -61,4 +68,7 @@ To run the server, you can use cargo run. All options are optional.
 `cargo run --bin runtome-server`
 
 To run the client, you have to provide 
-`cargo run --bin runtome --`
+`cargo run --bin runtome -- --target-port 8888`
+
+Note that `--` is used for passing command line arguments to the application.
+

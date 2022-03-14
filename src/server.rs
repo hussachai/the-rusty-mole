@@ -8,7 +8,6 @@ use std::str::from_utf8;
 use std::time::{Duration, Instant};
 
 use actix::prelude::*;
-use actix_files as fs;
 use actix_web::{App, Error, HttpMessage, HttpRequest, HttpResponse, HttpServer, middleware, web};
 use actix_web::http::StatusCode;
 use actix_web_actors::ws;
@@ -380,8 +379,7 @@ async fn main() -> std::io::Result<()> {
             // websocket route
             .service(web::resource("/subscribe/{client_id}").route(web::get().to(ws_index)))
             .service(web::resource("/hook/{client_id}/{paths:.*}").route(web::to(handle_hook)))
-            // static files
-            .service(fs::Files::new("/", "static/").index_file("index.html"))
+            .route("/ping", web::get().to(|| async { "pong" }))
     })
         // start http server on 127.0.0.1:8080
         .bind(format!("{}:{}", options.bind_addr, options.port))?

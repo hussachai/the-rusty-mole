@@ -5,7 +5,7 @@ use std::time::Duration;
 use std::collections::HashMap;
 use std::io::Read;
 use std::str::from_utf8;
-use std::thread;
+use std::{env, thread};
 
 use actix::io::SinkWrite;
 use actix::*;
@@ -32,7 +32,14 @@ fn main() {
 
 
     let mut sys = System::new("websocket-client");
-    let options: ClientOptions = Parser::parse();
+    let mut options: ClientOptions = Parser::parse();
+
+    env::var("RUNTOME_SERVER_HOST").into_iter().for_each(|host| {
+        // Override the server host with ENV variable only when the default value is used.
+        if options.server_host == "http://localhost:8080" {
+            options.server_host = host;
+        }
+    });
 
     let client_id = if &options.client_id == "" {
         Uuid::new_v4().to_string().replace("-", "")
