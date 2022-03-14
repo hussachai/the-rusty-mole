@@ -150,7 +150,10 @@ impl Handler<Connect> for WebSocketClientInitializer {
 
             let message_encryptor = MessageEncryptor::default();
 
-           let ws_connect = Client::new()
+           let ws_connect = Client::builder()
+               // Currently only HTTP1.1 supports Websocket until https://datatracker.ietf.org/doc/html/rfc8441 got implemented.
+                .max_http_version(awc::http::Version::HTTP_11)
+                .finish()
                 .ws(format!("{}/subscribe/{}", options.server_host, client_id))
                 .header("X-Public-Key", message_encryptor.encoded_public_key())
                 .connect()
