@@ -1,10 +1,10 @@
 
-Run to Me
+The Rusty Mole
 ===========
 
-Run to Me is a dead simple local tunneling application written in Rust.
+The Rusty Mole is a dead simple local tunneling application written in Rust.
 
-Server
+The Mole Boss
 ===========
 It is very easy to run the server. The most complicated part is setting up RabbitMQ, network configurations, and load balancer.
 If you plan to have only one server, you can install RabbitMQ on the same machine, and use default values.
@@ -14,11 +14,11 @@ The most common case, you install RabbitMQ in a separated instance (docker conta
 If you want the server to listen to a different port (default is 8080), you can specify `--port`.
 
 ```bash
-./runtome-server --amqp-uri amqp://192.168.2.4:5672/%2f --port 9000
+./mole-boss --amqp-uri amqp://192.168.2.4:5672/%2f --port 9000
 ```
 If you have RabbitMQ running on the same machine, you just simply run the binary.
 ```bash
-./runtome-server
+./mole-boss
 ```
 
 **Available Options**
@@ -27,7 +27,7 @@ If you have RabbitMQ running on the same machine, you just simply run the binary
 - `port {integer}` The port number that the server will listen to. The default value is 8080.
 
 
-Client
+The Mole Minion
 ===========
 
 To run the client, you have to provide a target port that the client will route the traffic to. 
@@ -38,7 +38,7 @@ to a new server automatically if the old one is down.
 
 **Example**
 ```bash
-./runtome --target-port 8888 --server-host https://tailrec.io --debug
+./mole-minion --target-port 8888 --server-host https://tailrec.io --debug
 ```
 
 Because `--server-host` parameter is something you don't change once the server is set up, this parameter can be provided/override 
@@ -65,10 +65,10 @@ Development
 You can check out the code and test it out on your machine.
 
 To run the server, you can use cargo run. All options are optional.  
-`cargo run --bin runtome-server`
+`cargo run --bin mole-boss`
 
 To run the client, you have to provide 
-`cargo run --bin runtome -- --target-port 8888`
+`cargo run --bin mole-minion -- --target-port 8888`
 
 Note that `--` is used for passing command line arguments to the application.
 

@@ -24,6 +24,7 @@ impl Default for MessageEncryptor {
 
 impl MessageEncryptor {
 
+    #[allow(dead_code)]
     pub fn generate_nonce(&self) -> String {
         Alphanumeric.sample_string(&mut rand::thread_rng(), 12)
     }

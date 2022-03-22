@@ -1,15 +1,15 @@
 [package]
-name = "runtome"
+name = "rusty-mole"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "runtome-server"
-path = "src/server.rs"
+name = "mole-boss"
+path = "src/mole_boss.rs"
 
 [[bin]]
-name = "runtome"
-path = "src/client.rs"
+name = "mole-minion"
+path = "src/mole_minion.rs"
 
 [dependencies]
 actix = "0.10"

@@ -1,3 +1,6 @@
+
+pub mod encryption;
+
 use std::collections::HashMap;
 use std::fmt;
 use chrono;

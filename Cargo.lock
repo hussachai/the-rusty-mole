@@ -2487,40 +2487,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "runtome"
-version = "0.1.0"
-dependencies = [
- "actix",
- "actix-codec",
- "actix-files",
- "actix-web",
- "actix-web-actors",
- "aes-gcm",
- "async-global-executor",
- "awc",
- "base64",
- "bytes 0.5.6",
- "chrono",
- "clap",
- "deadpool-lapin",
- "env_logger",
- "futures",
- "futures-lite",
- "lapin 2.0.1",
- "log",
- "p12",
- "qstring",
- "rand 0.8.5",
- "rand_core 0.5.1",
- "serde",
- "serde_json",
- "tracing",
- "ureq",
- "uuid",
- "x25519-dalek",
-]
-
-[[package]]
 name = "rustc_version"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2581,6 +2547,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5eebeaeb360c87bfb72e84abdb3447159c0eaececf1bef2aecd65a8be949d1c9"
 dependencies = [
  "base64",
+]
+
+[[package]]
+name = "rusty-mole"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "actix-codec",
+ "actix-files",
+ "actix-web",
+ "actix-web-actors",
+ "aes-gcm",
+ "async-global-executor",
+ "awc",
+ "base64",
+ "bytes 0.5.6",
+ "chrono",
+ "clap",
+ "deadpool-lapin",
+ "env_logger",
+ "futures",
+ "futures-lite",
+ "lapin 2.0.1",
+ "log",
+ "p12",
+ "qstring",
+ "rand 0.8.5",
+ "rand_core 0.5.1",
+ "serde",
+ "serde_json",
+ "tracing",
+ "ureq",
+ "uuid",
+ "x25519-dalek",
 ]
 
 [[package]]
