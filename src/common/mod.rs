@@ -23,13 +23,6 @@ pub fn print_banner(mode: &str) {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SecureEnvelop {
-    pub encoded_public_key: String,
-    pub nonce: String,
-    pub encrypted_payload: String
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct RequestData {
     pub request_id: String,
     pub path: String,

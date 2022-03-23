@@ -3,12 +3,12 @@ use std::time::Instant;
 
 use actix::prelude::*;
 use actix_web_actors::ws;
+use bytes::Bytes;
 use deadpool_lapin::lapin::{BasicProperties, Channel};
 use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeleteOptions};
 use deadpool_lapin::lapin::types::FieldTable;
 use futures_lite::stream::StreamExt;
 
-use crate::common::SecureEnvelop;
 use crate::common::encryption::MessageEncryptor;
 use crate::server;
 
@@ -26,11 +26,12 @@ pub struct MyWebSocket {
     pub queue_res_name: String
 }
 
-impl Handler<server::TextMessage> for MyWebSocket {
+impl Handler<server::Payload> for MyWebSocket {
     type Result = ();
 
-    fn handle(&mut self, msg: server::TextMessage, ctx: &mut Self::Context) {
-        ctx.text(msg.text);
+    fn handle(&mut self, msg: server::Payload, ctx: &mut Self::Context) {
+        debug!("Sent =====>");
+        ctx.binary(msg.data);
     }
 }
 
@@ -61,21 +62,9 @@ impl Actor for MyWebSocket {
                 match next_result {
                     Ok((_, delivery)) => {
                         let request_data = from_utf8(&delivery.data).unwrap();
-                        let nonce = message_encryptor.generate_nonce();
-                        let encrypted_payload = message_encryptor.encrypt_as_text(&client_public_key, &nonce, request_data);
-                        let server_public_key = message_encryptor.encoded_public_key();
-                        let secure_envelop = SecureEnvelop {
-                            encoded_public_key: server_public_key,
-                            nonce,
-                            encrypted_payload,
-                        };
-
-                        let serialized_secure_envelop = serde_json::to_string(&secure_envelop).unwrap();
-
-                        self_addr.do_send(server::TextMessage {text: serialized_secure_envelop });
-
                         debug!("Consumed: {:?}", request_data);
-
+                        let encrypted_request_data = message_encryptor.encrypt(&client_public_key, request_data);
+                        self_addr.do_send(server::Payload {data: Bytes::from(encrypted_request_data)});
                         let ack_result = delivery.ack(BasicAckOptions::default()).await;
                         if ack_result.is_err() {
                             error!("Ack failed. The message will be retried again!");
@@ -122,21 +111,26 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
                 self.hb = Instant::now();
             }
             Ok(ws::Message::Text(text)) => {
+                debug!("Response data: {}", text);
+            },
+            Ok(ws::Message::Binary(data)) => {
                 // substring for the UUID?
-                let message_id = &text[0..36];
-                let encrypted_response = text[36..].to_string().as_bytes().to_vec();
+                let message_id = String::from_utf8(data[0..36].to_vec()).unwrap();
+                debug!("Received message ID: {}", message_id);
+                let encrypted_response = data[36..].to_vec();
                 let properties = BasicProperties::default().with_message_id(message_id.into());
+
+                let response_data_json = self.message_encryptor.decrypt(
+                    &self.client_public_key, encrypted_response);
 
                 let _ = channel.basic_publish(
                     "",
                     &queue_res,
                     BasicPublishOptions::default(),
-                    encrypted_response,
+                    response_data_json,
                     properties,
                 );
-                debug!("Response data: {}", text);
             },
-            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
             Ok(ws::Message::Close(reason)) => {
                 ctx.close(reason);
                 ctx.stop();

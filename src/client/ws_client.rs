@@ -1,11 +1,13 @@
+
 use std::collections::HashMap;
 use std::io::Read;
-use std::str::from_utf8;
+use std::thread;
 use std::time::Duration;
-
-use actix::{Actor, ActorContext, Addr, AsyncContext, Context, Handler, ResponseFuture};
+use actix::*;
 use actix::io::SinkWrite;
 use actix_codec::Framed;
+use actix_web::client::WsProtocolError;
+use actix_web_actors::ws::Frame;
 use awc::{BoxedSocket, ws::{Codec, Message}};
 use bytes::Bytes;
 use futures::stream::SplitSink;
@@ -22,6 +24,7 @@ pub struct WebSocketClient {
     pub options: options::ClientOptions,
     pub http_agent: Agent,
     pub message_encryptor: encryption::MessageEncryptor,
+    pub server_public_key: String,
     pub writer: SinkWrite<Message, SplitSink<Framed<BoxedSocket, Codec>, Message>>,
 }
 
@@ -58,28 +61,15 @@ impl Handler<client::BuildRequest> for WebSocketClient {
     type Result = ();
 
     fn handle(&mut self, msg: client::BuildRequest, ctx: &mut Context<Self>) {
-        let secure_incoming_envelop_json = from_utf8(&msg.data).unwrap();
-        debug!("Secure Incoming Envelop: {:?}", secure_incoming_envelop_json);
+        let request_data_json = self.message_encryptor.decrypt(&self.server_public_key, msg.data);
+        // debug!("Request data JSON bytes: {:?}", request_data_json);
+        let request_data: common::RequestData = serde_json::from_slice(request_data_json.as_slice()).unwrap();
+        // debug!("Request data: {:?}", request_data);
 
-        let secure_incoming_envelop: common::SecureEnvelop = serde_json::from_str(secure_incoming_envelop_json).unwrap();
-        let server_public_key =  secure_incoming_envelop.encoded_public_key;
-        let nonce =  secure_incoming_envelop.nonce;
-        let request_data_json = self.message_encryptor.decrypt_from_text(
-            &server_public_key,
-            &nonce,
-            &secure_incoming_envelop.encrypted_payload
-        );
-        debug!("Request data JSON: {:?}", request_data_json);
-
-        let request_data: common::RequestData = serde_json::from_str(&request_data_json).unwrap();
         if self.options.debug {
             info!("{}", request_data);
         }
-        let server_key = client::ServerKey {
-            server_public_key,
-            nonce
-        };
-        ctx.address().do_send(client::ExecuteRequest { server_key, request_data });
+        ctx.address().do_send(client::ExecuteRequest { request_data });
     }
 }
 
@@ -88,12 +78,13 @@ impl Handler<client::ExecuteRequest> for WebSocketClient {
     type Result = ResponseFuture<()>;
 
     fn handle(&mut self, msg: client::ExecuteRequest, ctx: &mut Context<Self>) -> Self::Result {
+        // let server_public_key = self.server_public_key.clone();
         let target_port = self.options.target_port;
         let is_debuggable = self.options.debug;
         let http_agent = self.http_agent.clone();
         let self_addr = ctx.address().clone();
+
         Box::pin(async move {
-            let server_key = msg.server_key;
             let request_data = msg.request_data;
             let request_id = request_data.request_id;
             debug!("Path: {}", request_data.path);
@@ -145,7 +136,7 @@ impl Handler<client::ExecuteRequest> for WebSocketClient {
                 info!("{}", response_data);
             }
 
-            self_addr.do_send(client::SendResponse { server_key, request_id, response_data })
+            self_addr.do_send(client::SendResponse { request_id, response_data })
         })
     }
 }
@@ -154,27 +145,36 @@ impl Handler<client::SendResponse> for WebSocketClient {
     type Result = ();
 
     fn handle(&mut self, msg: client::SendResponse, _: &mut Context<Self>) {
-        let server_public_key = msg.server_key.server_public_key;
-        let nonce = msg.server_key.nonce;
         let request_id = msg.request_id;
         let response_data = msg.response_data;
-        debug!("Response Data: {:?}", response_data);
+        // debug!("Response Data: {:?}", response_data);
         let response_data_json = serde_json::to_string(&response_data).unwrap();
         debug!("Response Data JSON: {:?}", response_data_json);
-        let client_public_key = self.message_encryptor.encoded_public_key();
-        debug!("Server Public Key: {:?}", server_public_key);
-        let encrypted_payload = self.message_encryptor.encrypt_as_text(
-            &server_public_key, &nonce, &response_data_json);
-
-        let secure_outgoing_envelop = common::SecureEnvelop {
-            encoded_public_key: client_public_key,
-            nonce,
-            encrypted_payload
-        };
-
-        let secure_outgoing_envelop_json = serde_json::to_string(&secure_outgoing_envelop).unwrap();
-        let id_envelop = format!("{}{}", request_id, secure_outgoing_envelop_json);
-
-        self.writer.write(Message::Text(id_envelop));
+        let encrypted_response = self.message_encryptor.encrypt(
+            &self.server_public_key, &response_data_json);
+        let result = [request_id.as_bytes().to_vec(), encrypted_response].concat();
+        self.writer.write(Message::Binary(Bytes::from(result)));
     }
 }
+
+/// Handle server websocket messages
+impl StreamHandler<Result<Frame, WsProtocolError>> for WebSocketClient {
+
+    fn handle(&mut self, msg: Result<Frame, WsProtocolError>, ctx: &mut Context<Self>) {
+        if let Ok(Frame::Binary(data)) = msg {
+            ctx.address().do_send(client::BuildRequest { data: data.to_vec() });
+        }
+    }
+
+    fn started(&mut self, _ctx: &mut Context<Self>) {
+        info!("Connected");
+    }
+
+    fn finished(&mut self, ctx: &mut Context<Self>) {
+        info!("Server disconnected");
+        ctx.stop()
+    }
+}
+
+impl actix::io::WriteHandler<WsProtocolError> for WebSocketClient {}
+

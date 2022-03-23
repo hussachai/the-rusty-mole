@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::str::from_utf8;
-
 use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, web};
 use actix_web::http::StatusCode;
 use deadpool_lapin::lapin::BasicProperties;
@@ -10,15 +8,12 @@ use deadpool_lapin::Pool;
 use futures_lite::stream::StreamExt;
 use qstring::QString;
 use uuid::Uuid;
-
 use crate::common;
-use crate::common::encryption;
 
 pub async fn handle(pool: web::Data<Pool>,
-                     message_encryptor: web::Data<encryption::MessageEncryptor>,
-                     request: HttpRequest,
-                     paths: web::Path<(String, String)>,
-                     body: web::Bytes) -> Result<HttpResponse, Error> {
+                    request: HttpRequest,
+                    paths: web::Path<(String, String)>,
+                    body: web::Bytes) -> Result<HttpResponse, Error> {
     let (client_id, tail_path) = paths.into_inner();
     debug!("Tail path: {}", tail_path);
     debug!("Query: {}", request.query_string());
@@ -47,7 +42,7 @@ pub async fn handle(pool: web::Data<Pool>,
         method,
         headers,
         content_type,
-        body
+        body,
     };
     let serialized_request_data = serde_json::to_vec(&request_data)?;
 
@@ -77,27 +72,14 @@ pub async fn handle(pool: web::Data<Pool>,
                 let message_id = &delivery.properties.message_id().clone().unwrap().to_string();
                 if message_id == &request_id {
                     delivery.ack(BasicAckOptions::default()).await.expect("ack");
-                    break delivery.data
+                    break delivery.data;
                 }
             }
             _ => {}
         }
     };
-    let secure_response_envelop_json = from_utf8(&delivery_data).unwrap();
-    debug!("Secure Response Envelop JSON: {}", secure_response_envelop_json);
-    let secure_response_envelop: common::SecureEnvelop = serde_json::from_str(secure_response_envelop_json).unwrap();
-    debug!("Secure Response Envelop: {:?}", secure_response_envelop);
-    let client_public_key = secure_response_envelop.encoded_public_key;
-    debug!("Client Public Key: {:?}", client_public_key);
-    debug!("Server Public Key: {:?}", message_encryptor.encoded_public_key());
-    let nonce = secure_response_envelop.nonce;
-    debug!("Nonce: {:?}", nonce);
-    let encrypted_payload = secure_response_envelop.encrypted_payload;
-    debug!("Encrypted Payload: {:?}", encrypted_payload);
 
-    let response_data_json = message_encryptor.decrypt_from_text(
-        &client_public_key, &nonce, &encrypted_payload);
-    let response_data: common::ResponseData = serde_json::from_str(&response_data_json).unwrap();
+    let response_data: common::ResponseData = serde_json::from_slice(&delivery_data).unwrap();
     client_resp.status(StatusCode::from_u16(response_data.status).unwrap());
     client_resp.content_type(response_data.content_type);
     for (key, value) in response_data.headers {
@@ -108,5 +90,4 @@ pub async fn handle(pool: web::Data<Pool>,
         Some(body) => Ok(client_resp.body(body)),
         None => Ok(client_resp.finish())
     }
-
 }

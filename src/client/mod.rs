@@ -1,6 +1,4 @@
 use actix::prelude::*;
-use bytes::Bytes;
-
 use crate::common;
 
 pub mod options;
@@ -26,25 +24,18 @@ pub struct Connect;
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct BuildRequest {
-    pub data: Bytes
-}
-
-struct ServerKey {
-    server_public_key: String,
-    nonce: String
+    pub data: Vec<u8>
 }
 
 #[derive(Message)]
 #[rtype(result = "()")]
 struct ExecuteRequest {
-    server_key: ServerKey,
     request_data: common::RequestData
 }
 
 #[derive(Message)]
 #[rtype(result = "()")]
 struct SendResponse {
-    server_key: ServerKey,
     request_id: String,
     response_data: common::ResponseData
 }

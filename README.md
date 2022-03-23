@@ -1,11 +1,11 @@
 
 The Rusty Mole
-===========
+===============
 
 The Rusty Mole is a dead simple local tunneling application written in Rust.
 
 The Mole Boss
-===========
+=============
 It is very easy to run the server. The most complicated part is setting up RabbitMQ, network configurations, and load balancer.
 If you plan to have only one server, you can install RabbitMQ on the same machine, and use default values.
 
@@ -28,7 +28,7 @@ If you have RabbitMQ running on the same machine, you just simply run the binary
 
 
 The Mole Minion
-===========
+===============
 
 To run the client, you have to provide a target port that the client will route the traffic to. 
 The client will try to reconnect with a simple backoff time. It will wait from 1 second before the next retry

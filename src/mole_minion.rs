@@ -1,23 +1,21 @@
 #[macro_use]
 extern crate log;
+extern crate core;
 
 use std::env;
 
 use actix::*;
-use awc::{error::WsProtocolError, ws::Frame};
 use uuid::Uuid;
 
 use crate::client::options;
-use crate::client::ws_client;
 use crate::client::ws_init;
 
 mod common;
 mod client;
 
 fn main() {
-    ::std::env::set_var("RUST_LOG", "actix_web=info, runtome=info");
+    ::std::env::set_var("RUST_LOG", "actix_web=info, mole_minion=debug");
     env_logger::init();
-
 
     let mut sys = System::new("websocket-client");
     let mut options: options::ClientOptions = options::parse_options();
@@ -49,24 +47,3 @@ fn main() {
 }
 
 
-/// Handle server websocket messages
-impl StreamHandler<Result<Frame, WsProtocolError>> for ws_client::WebSocketClient {
-
-    fn handle(&mut self, msg: Result<Frame, WsProtocolError>, ctx: &mut Context<Self>) {
-        if let Ok(Frame::Text(data)) = msg {
-            debug!("Server: {:?}", data);
-            ctx.address().do_send(client::BuildRequest { data });
-        }
-    }
-
-    fn started(&mut self, _ctx: &mut Context<Self>) {
-        info!("Connected");
-    }
-
-    fn finished(&mut self, ctx: &mut Context<Self>) {
-        info!("Server disconnected");
-        ctx.stop()
-    }
-}
-
-impl actix::io::WriteHandler<WsProtocolError> for ws_client::WebSocketClient {}

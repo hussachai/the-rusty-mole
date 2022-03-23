@@ -1,10 +1,12 @@
 use std::time::Duration;
 
 use actix::prelude::*;
+use bytes::Bytes;
 
 pub mod options;
 pub mod handler_hook;
 pub mod handler_subscribe;
+pub mod handler_public_key;
 pub mod ws_server;
 
 /// How often heartbeat pings are sent
@@ -15,7 +17,7 @@ pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Message)]
 #[rtype(result="()")]
-struct TextMessage {
-    text: String
+struct Payload {
+    data: Bytes
 }
 

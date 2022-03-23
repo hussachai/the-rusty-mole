@@ -61,8 +61,16 @@ impl Handler<client::ResetRetryWaitTime> for WebSocketClientInitializer {
     }
 }
 
+// TODO: Move to awc once the API is stable
+fn fetch_server_public_key(agent: &Agent, server_host: &str) -> String {
+    let uri = format!("{}/public-key", server_host);
+    let response = agent.request("GET", &uri).call().unwrap();
+    response.into_string().unwrap()
+}
+
 impl Handler<client::Connect> for WebSocketClientInitializer {
     type Result = ResponseFuture<()>;
+
     fn handle(&mut self, _: client::Connect, ctx: &mut Context<Self>) -> Self::Result {
         let init_actor = ctx.address().clone();
         let options = self.options.clone();
@@ -70,7 +78,13 @@ impl Handler<client::Connect> for WebSocketClientInitializer {
 
         Box::pin(async move {
 
+            let http_agent: Agent = ureq::AgentBuilder::new()
+                .timeout_read(Duration::from_secs(options.timeout_read))
+                .timeout_write(Duration::from_secs(options.timeout_write))
+                .build();
+
             let message_encryptor = encryption::MessageEncryptor::default();
+            let server_public_key = fetch_server_public_key(&http_agent, &options.server_host);
 
             let ws_connect = Client::builder()
                 // Currently only HTTP1.1 supports Websocket until https://datatracker.ietf.org/doc/html/rfc8441 got implemented.
@@ -91,15 +105,12 @@ impl Handler<client::Connect> for WebSocketClientInitializer {
                     let (sink, stream) = framed.split();
                     ws_client::WebSocketClient::create(|ctx| {
                         ws_client::WebSocketClient::add_stream(stream, ctx);
-                        let http_agent: Agent = ureq::AgentBuilder::new()
-                            .timeout_read(Duration::from_secs(options.timeout_read))
-                            .timeout_write(Duration::from_secs(options.timeout_write))
-                            .build();
                         ws_client::WebSocketClient {
                             init_actor,
                             options,
                             http_agent,
                             message_encryptor,
+                            server_public_key,
                             writer: SinkWrite::new(sink, ctx),
                         }
                     });

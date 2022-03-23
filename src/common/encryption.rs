@@ -1,4 +1,4 @@
-use std::str::from_utf8;
+
 use rand_core::OsRng;
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 use aes_gcm::{Aes256Gcm, Key, Nonce}; // Or `Aes128Gcm`
@@ -24,8 +24,7 @@ impl Default for MessageEncryptor {
 
 impl MessageEncryptor {
 
-    #[allow(dead_code)]
-    pub fn generate_nonce(&self) -> String {
+    fn generate_nonce(&self) -> String {
         Alphanumeric.sample_string(&mut rand::thread_rng(), 12)
     }
 
@@ -44,35 +43,39 @@ impl MessageEncryptor {
         shared_secret
     }
 
-    pub fn encrypt(&self, encoded_public_key: &str, nonce_str: &str, plain_text: &str) -> Vec<u8> {
+    pub fn encrypt(&self, encoded_public_key: &str, plain_text: &str) -> Vec<u8> {
         let shared_secret = self.derive_shared_secret(encoded_public_key);
         let secret_key = Key::from_slice(shared_secret.as_bytes());
         let cipher = Aes256Gcm::new(secret_key);
-        let nonce = Nonce::from_slice(nonce_str.as_bytes());
+        let nonce_str = self.generate_nonce();
+        let nonce_bytes = nonce_str.as_bytes();
+        let nonce = Nonce::from_slice(nonce_bytes);
         let cipher_vec = cipher.encrypt(nonce, plain_text.as_bytes().as_ref())
             .expect("encryption failure!"); // NOTE: handle this error to avoid panics!
-        cipher_vec
+        [nonce_bytes.to_vec(), cipher_vec].concat()
     }
 
-    pub fn encrypt_as_text(&self, encoded_public_key: &str, nonce_str: &str, plain_text: &str) -> String {
-        let cipher_vec = self.encrypt(encoded_public_key, nonce_str, plain_text);
-        encode(cipher_vec)
-    }
-
-    pub fn decrypt(&self, encoded_public_key: &str, nonce_str: &str, cipher_vec: Vec<u8>) -> Vec<u8> {
+    pub fn decrypt(&self, encoded_public_key: &str, cipher_vec_with_nonce: Vec<u8>) -> Vec<u8> {
         let shared_secret = self.derive_shared_secret(encoded_public_key);
         let secret_key = Key::from_slice(shared_secret.as_bytes());
         let cipher = Aes256Gcm::new(secret_key);
-        let nonce = Nonce::from_slice(nonce_str.as_bytes());
+        let nonce = Nonce::from_slice(&cipher_vec_with_nonce[0..12]);
+        let cipher_vec = &cipher_vec_with_nonce[12..];
         let plain_vec = cipher.decrypt(nonce, cipher_vec.as_ref())
             .expect("decryption failure!");
         plain_vec
     }
 
-    pub fn decrypt_from_text(&self, encoded_public_key: &str, nonce_str: &str, cipher_text: &str) -> String {
-        let cipher_vec = decode(cipher_text).unwrap();
-        let plain_vec = self.decrypt(encoded_public_key, nonce_str, cipher_vec);
-        from_utf8(&plain_vec).unwrap().to_string()
-    }
+}
 
+#[test]
+fn test_key_exchange() {
+    let bob = MessageEncryptor::default();
+    let nonce = bob.generate_nonce();
+    let alice = MessageEncryptor::default();
+
+    let message = "Hello Alice";
+    let cipher_text = bob.encrypt(&alice.encoded_public_key(), message);
+    let plain_text = alice.decrypt(&bob.encoded_public_key(), cipher_text);
+    assert_eq!(message, String::from_utf8(plain_text).unwrap());
 }
