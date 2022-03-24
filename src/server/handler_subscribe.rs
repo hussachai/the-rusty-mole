@@ -15,7 +15,7 @@ pub async fn handle(pool: web::Data<Pool>,
                   stream: web::Payload) -> Result<HttpResponse, Error> {
     debug!("{:?}", request);
     let client_public_key = request.headers().get("X-Public-Key").unwrap().to_str().unwrap();
-    let client_id = paths.0;
+    let client_id = paths.into_inner();
     let connection = pool.get().await.unwrap();
     let channel = connection.create_channel().await.unwrap();
     let queue_req_name = format!("{}_req", client_id);

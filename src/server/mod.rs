@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use actix::prelude::*;
-use bytes::Bytes;
+use actix_web::web::Bytes;
 
 pub mod options;
 pub mod handler_hook;

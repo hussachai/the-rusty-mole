@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, web};
 use actix_web::http::StatusCode;
 use deadpool_lapin::lapin::BasicProperties;
-use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions};
+use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicNackOptions, BasicPublishOptions};
 use deadpool_lapin::lapin::types::FieldTable;
 use deadpool_lapin::Pool;
 use futures_lite::stream::StreamExt;
@@ -34,7 +34,7 @@ pub async fn handle(pool: web::Data<Pool>,
     let content_type = request.content_type().to_string();
     let body = Some(String::from_utf8(body.to_vec()).unwrap());
     let request_id = Uuid::new_v4().to_string();
-    debug!("Body: {:?}", body);
+
     let request_data = common::RequestData {
         request_id: request_id.clone(),
         path: tail_path,
@@ -64,18 +64,25 @@ pub async fn handle(pool: web::Data<Pool>,
             BasicConsumeOptions::default(),
             FieldTable::default(),
         ).await.unwrap();
-
     let delivery_data = loop {
+        log::debug!("Fetching a message from the queue: {}", queue_res_name);
         match consumer.next().await {
             Some(result) => {
                 let (_, delivery) = result.unwrap();
                 let message_id = &delivery.properties.message_id().clone().unwrap().to_string();
-                if message_id == &request_id {
+                log::debug!("[req:{}] Hook received a message, and it's waiting for the ID: {}", request_id, message_id);
+                if message_id == request_id {
+                    log::debug!("[req:{}] Message and request ID match. Deleting the message and returning the response.", request_id);
                     delivery.ack(BasicAckOptions::default()).await.expect("ack");
                     break delivery.data;
+                } else {
+                    log::debug!("[req:{}] Message and request ID do not match. Re-queueing the message.", request_id);
+                    delivery.nack(BasicNackOptions { multiple: false, requeue: true}).await.expect("nack")
                 }
             }
-            _ => {}
+            _ => {
+                log::warn!("[req:{}] Consumed an empty message", request_id)
+            }
         }
     };
 
@@ -83,7 +90,7 @@ pub async fn handle(pool: web::Data<Pool>,
     client_resp.status(StatusCode::from_u16(response_data.status).unwrap());
     client_resp.content_type(response_data.content_type);
     for (key, value) in response_data.headers {
-        client_resp.set_header(key, value);
+        client_resp.insert_header((key, value));
     }
 
     match response_data.body {

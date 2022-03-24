@@ -2,8 +2,6 @@ use actix::prelude::*;
 use crate::common;
 
 pub mod options;
-pub mod ws_client;
-pub mod ws_init;
 
 pub const MIN_RETRY_WAIT_TIME: u64 = 1;
 

@@ -2,8 +2,8 @@ use std::str::from_utf8;
 use std::time::Instant;
 
 use actix::prelude::*;
+use actix_web::web::Bytes;
 use actix_web_actors::ws;
-use bytes::Bytes;
 use deadpool_lapin::lapin::{BasicProperties, Channel};
 use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeleteOptions};
 use deadpool_lapin::lapin::types::FieldTable;
@@ -116,7 +116,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
             Ok(ws::Message::Binary(data)) => {
                 // substring for the UUID?
                 let message_id = String::from_utf8(data[0..36].to_vec()).unwrap();
-                debug!("Received message ID: {}", message_id);
+                debug!("Received message ID: {} and it will be put to queue: {}", message_id, queue_res);
                 let encrypted_response = data[36..].to_vec();
                 let properties = BasicProperties::default().with_message_id(message_id.into());
 
@@ -158,16 +158,16 @@ impl MyWebSocket {
     fn hb(&self, ctx: &mut <Self as Actor>::Context) {
         ctx.run_interval(server::HEARTBEAT_INTERVAL, |act, ctx| {
             // check client heartbeats
-            if Instant::now().duration_since(act.hb) > server::CLIENT_TIMEOUT {
-                // heartbeat timed out
-                println!("Websocket Client heartbeat failed, disconnecting!");
-
-                // stop actor
-                ctx.stop();
-
-                // don't try to send a ping
-                return;
-            }
+            // if Instant::now().duration_since(act.hb) > server::CLIENT_TIMEOUT {
+            //     // heartbeat timed out
+            //     println!("Websocket Client heartbeat failed, disconnecting!");
+            //
+            //     // stop actor
+            //     ctx.stop();
+            //
+            //     // don't try to send a ping
+            //     return;
+            // }
 
             ctx.ping(b"");
 
