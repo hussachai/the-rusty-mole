@@ -3,11 +3,13 @@ use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, web};
 use actix_web::http::StatusCode;
 use deadpool_lapin::lapin::BasicProperties;
 use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicNackOptions, BasicPublishOptions};
-use deadpool_lapin::lapin::types::FieldTable;
+use deadpool_lapin::lapin::types::{AMQPValue, FieldTable};
 use deadpool_lapin::Pool;
 use futures_lite::stream::StreamExt;
 use qstring::QString;
+use base64;
 use uuid::Uuid;
+
 use crate::common;
 
 pub async fn handle(pool: web::Data<Pool>,
@@ -17,6 +19,14 @@ pub async fn handle(pool: web::Data<Pool>,
     let (client_id, tail_path) = paths.into_inner();
     debug!("Tail path: {}", tail_path);
     debug!("Query: {}", request.query_string());
+
+    let credentials = request.headers().get(common::HEADER_AUTHORIZATION).and_then(|auth_value| {
+        let basic_auth = auth_value.to_str().unwrap().to_string();
+        let basic_auth_value = basic_auth.trim_start_matches("Basic ");
+        let user_and_pass = String::from_utf8(base64::decode(basic_auth_value).unwrap()).unwrap();
+        Some(user_and_pass)
+    });
+
     let connection = pool.get().await.unwrap();
     let channel = connection.create_channel().await.unwrap();
     let queue_req_name = format!("{}_req", client_id);
@@ -46,13 +56,19 @@ pub async fn handle(pool: web::Data<Pool>,
     };
     let serialized_request_data = serde_json::to_vec(&request_data)?;
 
+    let mut headers = FieldTable::default();
+    if let Some(user_and_pass) = credentials {
+        headers.insert(common::HEADER_AUTHORIZATION.into(), AMQPValue::LongString(user_and_pass.into()));
+        headers.insert(common::HEADER_REQUEST_ID.into(), AMQPValue::LongString(request_id.clone().into()));
+    }
+
     let _ = channel
         .basic_publish(
             "",
             &queue_req_name,
             BasicPublishOptions::default(),
             serialized_request_data,
-            BasicProperties::default(),
+            BasicProperties::default().with_headers(headers),
         ).await.unwrap();
 
     let mut client_resp = HttpResponse::build(StatusCode::OK);
@@ -71,7 +87,7 @@ pub async fn handle(pool: web::Data<Pool>,
                 let (_, delivery) = result.unwrap();
                 let message_id = &delivery.properties.message_id().clone().unwrap().to_string();
                 log::debug!("[req:{}] Hook received a message, and it's waiting for the ID: {}", request_id, message_id);
-                if message_id == request_id {
+                if message_id == &request_id {
                     log::debug!("[req:{}] Message and request ID match. Deleting the message and returning the response.", request_id);
                     delivery.ack(BasicAckOptions::default()).await.expect("ack");
                     break delivery.data;

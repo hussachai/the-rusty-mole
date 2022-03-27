@@ -20,4 +20,3 @@ pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 struct Payload {
     data: Bytes
 }
-

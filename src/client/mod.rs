@@ -1,39 +1,29 @@
-use actix::prelude::*;
-use crate::common;
+
+use actix_web::web::Bytes;
+use tokio::sync::mpsc::UnboundedSender;
+use crate::common::encryption;
 
 pub mod options;
+pub mod handler;
 
 pub const MIN_RETRY_WAIT_TIME: u64 = 1;
 
 pub const MAX_RETRY_WAIT_TIME: u64 = 60;
 
-#[derive(Message)]
-#[rtype(result = "()")]
-struct PoisonPill;
-
-#[derive(Message)]
-#[rtype(result = "()")]
-struct ResetRetryWaitTime;
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct Connect;
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct BuildRequest {
-    pub data: Vec<u8>
+#[derive(Clone)]
+pub struct ClientContext {
+    pub options: options::ClientOptions,
+    pub http_agent: ureq::Agent,
+    pub message_encryptor: encryption::MessageEncryptor,
+    pub server_public_key: String,
+    pub sender: UnboundedSender<Bytes>
 }
 
-#[derive(Message)]
-#[rtype(result = "()")]
-struct ExecuteRequest {
-    request_data: common::RequestData
+pub async fn fetch_server_key(http_client: &awc::Client) -> String {
+    let mut response = http_client.get("http://localhost:8080/public-key")
+        .send()
+        .await.unwrap();
+    let data = response.body().await.unwrap();
+    String::from_utf8(data.to_vec()).unwrap()
 }
 
-#[derive(Message)]
-#[rtype(result = "()")]
-struct SendResponse {
-    request_id: String,
-    response_data: common::ResponseData
-}
