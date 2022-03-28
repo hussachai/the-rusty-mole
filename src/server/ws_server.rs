@@ -1,11 +1,14 @@
+use std::ops::Deref;
 use std::str::from_utf8;
 use std::time::Instant;
 
 use actix::prelude::*;
 use actix_web::web::Bytes;
 use actix_web_actors::ws;
-use deadpool_lapin::lapin::{BasicProperties, Channel};
+use deadpool_lapin::lapin::{BasicProperties, Channel, PromiseChain};
+use deadpool_lapin::lapin::message::Delivery;
 use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeleteOptions};
+use deadpool_lapin::lapin::publisher_confirm::PublisherConfirm;
 use deadpool_lapin::lapin::types::{AMQPValue, FieldTable};
 use futures_lite::stream::StreamExt;
 
@@ -14,6 +17,7 @@ use crate::{common, server};
 
 /// websocket connection is long running connection, it easier
 /// to handle with an actor
+#[derive(Clone)]
 pub struct MyWebSocket {
     /// Client must send ping at least once per 10 seconds (CLIENT_TIMEOUT),
     /// otherwise we drop connection.
@@ -43,13 +47,13 @@ impl Actor for MyWebSocket {
     fn started(&mut self, ctx: &mut Self::Context) {
 
         let queue_req = self.queue_req_name.clone();
-        let queue_res = self.queue_res_name.clone();
         let channel = self.channel.clone();
         let message_encryptor = self.message_encryptor.clone();
         let client_public_key = self.client_public_key.clone();
         let credentials = self.credentials.clone();
         let self_addr = ctx.address().clone();
 
+        let mut channel_context = self.deref().clone();
 
         async_global_executor::spawn(async move {
 
@@ -68,23 +72,11 @@ impl Actor for MyWebSocket {
                             let headers = delivery.properties.headers().as_ref().unwrap().inner();
                             match (headers.get(common::HEADER_AUTHORIZATION), headers.get(common::HEADER_REQUEST_ID)) {
                                 (Some(AMQPValue::LongString(provided_user_and_pass)), Some(AMQPValue::LongString(message_id))) => {
-                                    println!(">>>>>> {:?}", provided_user_and_pass.to_string());
-                                    println!(">>>##.. {}", user_and_pass);
                                     if user_and_pass != provided_user_and_pass.to_string() {
-                                        let properties = BasicProperties::default().with_message_id(message_id.to_string().into());
-                                        let bad_credentials_res = "{\"status\": 404, \"headers\": {}, \"content_type\": \"text/plain\"}".as_bytes().to_vec();
-                                        let _ = channel.basic_publish(
-                                            "",
-                                            &queue_res,
-                                            BasicPublishOptions::default(),
-                                            bad_credentials_res,
-                                            properties,
-                                        );
+                                        let bad_credentials_res = common::get_response_404();
+                                        channel_context.publish(message_id.as_str(), bad_credentials_res);
                                         println!("Bad credentials!!!");
-                                        let ack_result = delivery.ack(BasicAckOptions::default()).await;
-                                        if ack_result.is_err() {
-                                            error!("Ack failed. The message will be retried again!");
-                                        }
+                                        channel_context.ack(&delivery);
                                         continue;
                                     }
                                 },
@@ -95,11 +87,10 @@ impl Actor for MyWebSocket {
                         let request_data = from_utf8(&delivery.data).unwrap();
                         debug!("Consumed: {:?}", request_data);
                         let encrypted_request_data = message_encryptor.encrypt(&client_public_key, request_data);
+
                         self_addr.do_send(server::Payload {data: Bytes::from(encrypted_request_data)});
-                        let ack_result = delivery.ack(BasicAckOptions::default()).await;
-                        if ack_result.is_err() {
-                            error!("Ack failed. The message will be retried again!");
-                        }
+
+                        channel_context.ack(&delivery);
                     }
                     Err(e) =>
                         error!("Could not consume the message due to {:?}", e)
@@ -130,6 +121,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
     ) {
         let queue_res = self.queue_res_name.clone();
         let channel = self.channel.clone();
+        let mut channel_context = self.deref().clone();
 
         // process websocket messages
         // println!("WS: {:?}", msg);
@@ -149,19 +141,9 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
                 let message_id = String::from_utf8(data[0..36].to_vec()).unwrap();
                 debug!("Received message ID: {} and it will be put to queue: {}", message_id, queue_res);
                 let encrypted_response = data[36..].to_vec();
-
-                let properties = BasicProperties::default().with_message_id(message_id.into());
-
                 let response_data_json = self.message_encryptor.decrypt(
                     &self.client_public_key, encrypted_response);
-
-                let _ = channel.basic_publish(
-                    "",
-                    &queue_res,
-                    BasicPublishOptions::default(),
-                    response_data_json,
-                    properties,
-                );
+                channel_context.publish(message_id.as_str(), response_data_json);
             },
             Ok(ws::Message::Close(reason)) => {
                 ctx.close(reason);
@@ -183,6 +165,24 @@ impl MyWebSocket {
                queue_res_name: String) -> Self {
 
         Self { hb: Instant::now(), client_id, credentials, message_encryptor, client_public_key, channel, queue_req_name, queue_res_name }
+    }
+
+    fn publish(&mut self, message_id: &str, payload: Vec<u8>) -> PromiseChain<PublisherConfirm> {
+        let properties = BasicProperties::default().with_message_id(message_id.into());
+        self.channel.basic_publish(
+            "",
+            &self.queue_res_name,
+            BasicPublishOptions::default(),
+            payload,
+            properties,
+        )
+    }
+
+    async fn ack(&mut self, delivery: &Delivery) {
+        let ack_result = delivery.ack(BasicAckOptions::default()).await;
+        if ack_result.is_err() {
+            error!("Ack failed. The message will be retried again!");
+        }
     }
 
     /// helper method that sends ping to client every second.

@@ -17,6 +17,8 @@ pub const HEADER_REQUEST_ID: &str = "X-Request-ID";
 
 pub const HEADER_AUTHORIZATION: &str = "Authorization";
 
+pub const RESPONSE_404: &str = "{\"status\": 404, \"headers\": {}, \"content_type\": \"text/plain\"}";
+
 pub fn print_banner(mode: &str) {
     // We don't need this as a constant because it will be shown only once.
     let banner: &str = "\n\n\
@@ -69,6 +71,9 @@ pub struct ResponseData {
     pub body: Option<String>
 }
 
+pub fn get_response_404() -> Vec<u8> {
+    RESPONSE_404.as_bytes().to_vec()
+}
 
 impl fmt::Display for ResponseData {
 
