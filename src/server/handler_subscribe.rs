@@ -1,4 +1,4 @@
-use actix_web::{Error, HttpRequest, HttpResponse, web};
+use actix_web::{Error, error, HttpRequest, HttpResponse, web};
 use actix_web_actors::ws;
 use deadpool_lapin::lapin::options::QueueDeclareOptions;
 use deadpool_lapin::lapin::types::FieldTable;
@@ -33,17 +33,21 @@ pub async fn handle(pool: web::Data<Pool>,
     log::info!("Received connection request from client ID: {}", client_id);
     log::debug!("Client Public Key: {:?}", client_public_key);
 
-    let _ = channel.queue_declare(
+    let req_queue = channel.queue_declare(
         &queue_req_name,
         QueueDeclareOptions::default(),
         FieldTable::default(),
-    ).await;
-    let _ = channel.queue_declare(
+    ).await.map_err(|e| error::ErrorInternalServerError(e.to_string()))?;
+    log::debug!("Request queue: {} created", req_queue.name());
+
+    let res_queue = channel.queue_declare(
         &queue_res_name,
         QueueDeclareOptions::default(),
         FieldTable::default(),
-    ).await;
-    let actor = ws_server::MyWebSocket::new(
+    ).await.map_err(|e| error::ErrorInternalServerError(e.to_string()))?;
+    log::debug!("Response queue: {} created", res_queue.name());
+
+    let actor = ws_server::ChannelContext::new(
         client_id,
         credentials,
         message_encryptor.get_ref().clone(),

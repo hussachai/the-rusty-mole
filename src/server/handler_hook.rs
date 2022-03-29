@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, web};
+use actix_web::{Error, error, HttpMessage, HttpRequest, HttpResponse, web};
 use actix_web::http::StatusCode;
 use deadpool_lapin::lapin::BasicProperties;
 use deadpool_lapin::lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicNackOptions, BasicPublishOptions};
@@ -10,7 +10,7 @@ use qstring::QString;
 use base64;
 use uuid::Uuid;
 
-use crate::common;
+use crate::{common, server};
 
 pub async fn handle(pool: web::Data<Pool>,
                     request: HttpRequest,
@@ -61,6 +61,7 @@ pub async fn handle(pool: web::Data<Pool>,
         headers.insert(common::HEADER_AUTHORIZATION.into(), AMQPValue::LongString(user_and_pass.into()));
         headers.insert(common::HEADER_REQUEST_ID.into(), AMQPValue::LongString(request_id.clone().into()));
     }
+    headers.insert(common::HEADER_REQUEST_IP.into(), AMQPValue::LongString(request.peer_addr().unwrap().to_string().into()));
 
     let _ = channel
         .basic_publish(
@@ -69,7 +70,11 @@ pub async fn handle(pool: web::Data<Pool>,
             BasicPublishOptions::default(),
             serialized_request_data,
             BasicProperties::default().with_headers(headers),
-        ).await.unwrap();
+        ).await.map_err(|e| {
+        log::error!("Failed to publish to the queue: {} due to: {}", queue_req_name, e.to_string());
+        error::ErrorNotFound(server::NOT_FOUND)
+    })?;
+
 
     let mut client_resp = HttpResponse::build(StatusCode::OK);
 
@@ -79,7 +84,11 @@ pub async fn handle(pool: web::Data<Pool>,
             "my_consumer",
             BasicConsumeOptions::default(),
             FieldTable::default(),
-        ).await.unwrap();
+        ).await.map_err(|e| {
+        log::error!("Failed to consume to the queue: {} due to: {}", queue_res_name, e.to_string());
+        error::ErrorNotFound(server::NOT_FOUND)
+    })?;
+
     let delivery_data = loop {
         log::debug!("Fetching a message from the queue: {}", queue_res_name);
         match consumer.next().await {

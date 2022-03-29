@@ -15,6 +15,8 @@ pub const HEADER_PASSWORD: &str = "X-Password";
 
 pub const HEADER_REQUEST_ID: &str = "X-Request-ID";
 
+pub const HEADER_REQUEST_IP: &str = "X-Request-IP";
+
 pub const HEADER_AUTHORIZATION: &str = "Authorization";
 
 pub const RESPONSE_404: &str = "{\"status\": 404, \"headers\": {}, \"content_type\": \"text/plain\"}";

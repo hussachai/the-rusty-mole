@@ -2,8 +2,6 @@
 
 use std::{io, thread};
 use std::time::Duration;
-use actix_web::web::Bytes;
-use awc::ws;
 use actix_web::HttpMessage;
 use awc::http::{Uri, uri};
 use futures::executor::ThreadPool;
@@ -12,7 +10,6 @@ use futures_util::task::SpawnExt;
 use tokio::{select, sync::mpsc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use crate::client::options;
-use crate::client::handler;
 use crate::common::encryption;
 
 mod common;
@@ -27,8 +24,8 @@ async fn main() {
 
     let options: options::ClientOptions = options::parse_options();
 
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let mut cmd_rx = UnboundedReceiverStream::new(cmd_rx);
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let mut receiver_stream = UnboundedReceiverStream::new(receiver);
 
     let input_thread = thread::spawn(move || loop {
         let mut cmd = String::with_capacity(32);
@@ -45,7 +42,6 @@ async fn main() {
     let message_encryptor = encryption::MessageEncryptor::default();
     let server_public_key = client::fetch_server_key(&http_client).await;
     println!("Key: {}", server_public_key);
-    let sender = cmd_tx;
 
     let server_host = Uri::try_from(&options.server_host).unwrap();
 
@@ -75,8 +71,7 @@ async fn main() {
     };
     println!("The following proxy URL is ready to serve:\n{}\n\n", hook_uri);
 
-    let pool = ThreadPool::new().expect("Failed to build pool");
-    let pool_ref = &pool;
+    let thread_pool = ThreadPool::new().expect("Failed to build pool");
 
     log::debug!("response: {:?}", res);
     log::info!("connected; server will echo messages sent");
@@ -89,42 +84,7 @@ async fn main() {
         sender
     };
 
-    loop {
-        select! {
-            Some(msg) = ws.next() => {
-                match msg {
-                    Ok(ws::Frame::Binary(data)) => {
-                        log::info!("Received: {:?}", data);
-                        let new_client_context = client_context.clone();
-                        pool_ref.spawn(async move {
-                            handler::handle(&new_client_context, data).await;
-                        });
-                    }
-                    Ok(ws::Frame::Text(txt)) => {
-                        // log echoed messages from server
-                        log::info!("Server: {:?}", txt)
-                    }
-
-                    Ok(ws::Frame::Ping(_)) => {
-                        // respond to ping probes
-                        ws.send(ws::Message::Pong(Bytes::new())).await.unwrap();
-                    }
-
-                    _ => {}
-                }
-            }
-
-            Some(cmd) = cmd_rx.next() => {
-                if cmd.is_empty() {
-                    continue;
-                }
-                log::info!("Yo I got you {:?}", cmd);
-                ws.send(ws::Message::Binary(cmd.into())).await.unwrap();
-            }
-
-            else => break
-        }
-    }
+    client::event_loop(&thread_pool, &client_context, receiver_stream, ws).await;
 
     input_thread.join().unwrap();
 }
