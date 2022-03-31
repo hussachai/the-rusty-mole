@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use actix::prelude::*;
-use actix_web::{Error, error};
 use actix_web::web::Bytes;
 
 pub mod options;

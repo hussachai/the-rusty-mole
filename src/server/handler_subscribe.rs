@@ -6,14 +6,16 @@ use deadpool_lapin::Pool;
 use crate::common;
 
 use crate::common::encryption;
+use crate::options::ServerOptions;
 use crate::server::ws_server;
 
 /// do websocket handshake and start `MyWebSocket` actor
-pub async fn handle(pool: web::Data<Pool>,
-                  message_encryptor: web::Data<encryption::MessageEncryptor>,
-                  request: HttpRequest,
-                  paths: web::Path<String>,
-                  stream: web::Payload) -> Result<HttpResponse, Error> {
+pub async fn handle(options: web::Data<ServerOptions>,
+                    pool: web::Data<Pool>,
+                    message_encryptor: web::Data<encryption::MessageEncryptor>,
+                    request: HttpRequest,
+                    paths: web::Path<String>,
+                    stream: web::Payload) -> Result<HttpResponse, Error> {
     log::debug!("{:?}", request);
     let client_public_key = request.headers().get(common::HEADER_PUBLIC_KEY).unwrap().to_str().unwrap();
 
@@ -23,6 +25,10 @@ pub async fn handle(pool: web::Data<Pool>,
         // We use the same format as Basic Auth
         Some(format!("{}:{}", username, password))
     });
+
+    if credentials.is_none() && options.password_required {
+        return Err(error::ErrorBadRequest("Please contact your system administrator."))
+    }
 
     let client_id = paths.into_inner();
     let connection = pool.get().await.unwrap();
@@ -54,7 +60,7 @@ pub async fn handle(pool: web::Data<Pool>,
         client_public_key.to_string(),
         channel,
         queue_req_name,
-        queue_res_name
+        queue_res_name,
     );
     let response = ws::start(actor, &request, stream);
     log::debug!("{:?}", response);

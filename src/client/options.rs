@@ -16,7 +16,7 @@ pub struct ClientOptions {
     pub target_port: u16,
 
     /// The server host and port
-    #[clap(short, long, default_value = "http://localhost:8080")]
+    #[clap(short = 'h', long, default_value = "http://localhost:8080")]
     pub server_host: String,
 
     /// The username
@@ -51,7 +51,11 @@ const ENV_USERNAME: &str = "MOLE_USERNAME";
 const ENV_PASSWORD: &str = "MOLE_PASSWORD";
 
 pub fn parse_options() -> ClientOptions {
+
     let mut options: ClientOptions = Parser::parse();
+
+    let args: Vec<String> = env::args().collect();
+
     env::var(ENV_SERVER_HOST).into_iter().for_each(|host| {
         // Override the server host with ENV variable only when the default value is used.
         if options.server_host == "http://localhost:8080" {

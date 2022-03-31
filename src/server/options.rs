@@ -1,7 +1,7 @@
 use clap::Parser;
 
 /// The open source secure introspectable tunnels to localhost.
-#[derive(Parser, Debug)]
+#[derive(Clone, Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct ServerOptions {
     /// A bind address. The default value is 0.0.0.0
@@ -12,7 +12,11 @@ pub struct ServerOptions {
     pub amqp_uri: String,
     /// The port number that the server will listen to the client. The default value is 8080
     #[clap(short, long, default_value = "8080")]
-    pub port: u16
+    pub port: u16,
+    /// Provides this flag to enforce every client to have a password set. Otherwise, the connection will be rejected.
+    #[clap(long)]
+    pub password_required: bool,
+
 }
 
 

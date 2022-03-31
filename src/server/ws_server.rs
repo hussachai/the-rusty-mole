@@ -79,14 +79,14 @@ impl Actor for ChannelContext {
                                         channel_context.publish(message_id.as_str(), bad_credentials_res);
                                         let message = format!("{} is trying to access with the wrong credentials!", client_ip);
                                         self_addr.do_send(server::ServerMessage {message});
-                                        channel_context.ack(&delivery);
+                                        channel_context.ack(&delivery).await;
                                         continue;
                                     }
                                 },
                                 _ => {
                                     let message = format!("{} is trying to access with no credentials!", client_ip);
                                     self_addr.do_send(server::ServerMessage {message});
-                                    channel_context.ack(&delivery);
+                                    channel_context.ack(&delivery).await;
                                     continue;
                                 },
                             }
@@ -98,7 +98,7 @@ impl Actor for ChannelContext {
 
                         self_addr.do_send(server::Payload {data: Bytes::from(encrypted_request_data)});
 
-                        channel_context.ack(&delivery);
+                        channel_context.ack(&delivery).await;
                     }
                     Err(e) =>
                         log::error!("Could not consume the message due to {:?}", e)
@@ -215,16 +215,16 @@ impl ChannelContext {
     fn hb(&self, ctx: &mut <Self as Actor>::Context) {
         ctx.run_interval(server::HEARTBEAT_INTERVAL, |act, ctx| {
             // check client heartbeats
-            // if Instant::now().duration_since(act.hb) > server::CLIENT_TIMEOUT {
-            //     // heartbeat timed out
-            //     println!("Websocket Client heartbeat failed, disconnecting!");
-            //
-            //     // stop actor
-            //     ctx.stop();
-            //
-            //     // don't try to send a ping
-            //     return;
-            // }
+            if Instant::now().duration_since(act.hb) > server::CLIENT_TIMEOUT {
+                // heartbeat timed out
+                println!("Websocket Client heartbeat failed, disconnecting!");
+
+                // stop actor
+                ctx.stop();
+
+                // don't try to send a ping
+                return;
+            }
 
             ctx.ping(b"");
 

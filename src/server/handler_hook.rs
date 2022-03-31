@@ -11,8 +11,10 @@ use base64;
 use uuid::Uuid;
 
 use crate::{common, server};
+use crate::options::ServerOptions;
 
-pub async fn handle(pool: web::Data<Pool>,
+pub async fn handle(options: web::Data<ServerOptions>,
+                    pool: web::Data<Pool>,
                     request: HttpRequest,
                     paths: web::Path<(String, String)>,
                     body: web::Bytes) -> Result<HttpResponse, Error> {
@@ -26,6 +28,11 @@ pub async fn handle(pool: web::Data<Pool>,
         let user_and_pass = String::from_utf8(base64::decode(basic_auth_value).unwrap()).unwrap();
         Some(user_and_pass)
     });
+
+    if credentials.is_none() && options.password_required {
+        // We will return 404
+        return Err(error::ErrorNotFound(server::NOT_FOUND));
+    }
 
     let connection = pool.get().await.unwrap();
     let channel = connection.create_channel().await.unwrap();
