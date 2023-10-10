@@ -22,9 +22,11 @@ async fn main() -> std::io::Result<()> {
     common::print_banner("Server");
 
     let mut cfg = Config::default();
-    cfg.url = Some(options.amqp_uri.into());
+    cfg.url = Some(options.amqp_uri.clone().into());
     let pool = cfg.create_pool(Some(Runtime::AsyncStd1)).unwrap();
     let message_encryptor = MessageEncryptor::default();
+    let bind_addr = options.bind_addr.to_string();
+    let port = options.port.to_string();
 
     HttpServer::new(move || {
         App::new()
@@ -32,6 +34,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(message_encryptor.clone()))
+            .app_data(web::Data::new(options.clone()))
             // websocket route
             .service(web::resource("/subscribe/{client_id}").route(web::get().to(handler_subscribe::handle)))
             .service(web::resource("/public-key").route(web::get().to(handler_public_key::handle)))
@@ -39,7 +42,7 @@ async fn main() -> std::io::Result<()> {
             .route("/ping", web::get().to(|| async { "pong" }))
     })
         // start http server on 127.0.0.1:8080
-        .bind(format!("{}:{}", options.bind_addr, options.port))?
+        .bind(format!("{}:{}", bind_addr, port))?
         .run()
         .await
 }

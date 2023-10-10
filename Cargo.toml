@@ -12,19 +12,26 @@ name = "mole-minion"
 path = "src/mole_minion.rs"
 
 [dependencies]
-actix = "0.10"
-actix-codec = "0.3"
-actix-web = { version = "3", features = ["openssl"] }
-actix-web-actors = "3"
-actix-files = "0.3"
-awc = "2"
+actix = "0.13"
+actix-codec = "0.5"
+actix-files = "0.6"
+actix-rt = "2"
+actix-web = "4"
+actix-web-actors = "4.1"
+awc = "3.0.0-beta.21"
+
 p12 = "0.6.0"
-futures = "0.3.1"
+futures = { version = "0.3.1", features = ["thread-pool"] }
 bytes = "0.5.3"
 log = "0.4"
-env_logger = "0.8"
+env_logger = "0.9"
+tokio = { version = "1.13.1", features = ["full"] }
+tokio-stream = "0.1.8"
+
 lapin = "2.0.1"
 futures-lite = "1.12.0"
+futures-util = { version = "0.3.7", default-features = false, features = ["std", "sink"] }
+
 tracing = "0.1.30"
 async-global-executor = "2.0.2"
 deadpool-lapin = { version = "0.9.1", features = ["rt_async-std_1"] }

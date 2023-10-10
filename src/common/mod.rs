@@ -7,20 +7,33 @@ use chrono;
 use qstring::QString;
 use serde::{Deserialize, Serialize};
 
+pub const HEADER_PUBLIC_KEY: &str = "X-Public-Key";
+
+pub const HEADER_USERNAME: &str = "X-Username";
+
+pub const HEADER_PASSWORD: &str = "X-Password";
+
+pub const HEADER_REQUEST_ID: &str = "X-Request-ID";
+
+pub const HEADER_REQUEST_IP: &str = "X-Request-IP";
+
+pub const HEADER_AUTHORIZATION: &str = "Authorization";
+
+pub const RESPONSE_404: &str = "{\"status\": 404, \"headers\": {}, \"content_type\": \"text/plain\"}";
+
 pub fn print_banner(mode: &str) {
     // We don't need this as a constant because it will be shown only once.
     let banner: &str = "\n\n\
-\x20  88888888ba                              ad888888b,  88b           d88\n\
-\x20  88      '8b                            d8'     '88  888b         d888\n\
-\x20  88      ,8P                                    a8P  88`8b       d8'88\n\
-\x20  88aaaaaa8P'  88       88  8b,dPPYba,        ,d8P'   88 `8b     d8' 88   ,adPPYba,\n\
-\x20  88'''''88'    88       88  88P'   `'8a     a8P'      88  `8b   d8'  88  a8P_____88\n\
-\x20  88    `8b    88       88  88       88   a8P'        88   `8b d8'   88  8PP'''''''\n\
-\x20  88     `8b   '8a,   ,a88  88       88  d8'          88    `888'    88  `8b,   ,aa\n\
-\x20  88      `8b   `'YbbdP'Y8  88       88  88888888888  88     `8'     88   `'Ybbd8'\n\
-\x20  ==================================================================================\n";
+
+\x20                _____
+\x20             \\'_   _'/
+\x20              |(>)-(<)|
+\x20           ../   εO϶   \\..
+\x20  -------''(((:-.,_,.-:)))''--------
+\x20  ==================================\n";
     println!("{}\x20  Mode: {}\n\n", banner, mode);
 }
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RequestData {
@@ -60,6 +73,9 @@ pub struct ResponseData {
     pub body: Option<String>
 }
 
+pub fn get_response_404() -> Vec<u8> {
+    RESPONSE_404.as_bytes().to_vec()
+}
 
 impl fmt::Display for ResponseData {
 
